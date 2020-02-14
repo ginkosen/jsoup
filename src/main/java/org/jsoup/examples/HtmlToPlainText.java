@@ -1,7 +1,7 @@
 package org.jsoup.examples;
 
 import org.jsoup.Jsoup;
-import org.jsoup.helper.StringUtil;
+import org.jsoup.internal.StringUtil;
 import org.jsoup.helper.Validate;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -60,14 +60,13 @@ public class HtmlToPlainText {
      */
     public String getPlainText(Element element) {
         FormattingVisitor formatter = new FormattingVisitor();
-        NodeTraversor traversor = new NodeTraversor(formatter);
-        traversor.traverse(element); // walk the DOM, and call .head() and .tail() for each node
+        NodeTraversor.traverse(formatter, element); // walk the DOM, and call .head() and .tail() for each node
 
         return formatter.toString();
     }
 
     // the formatting rules, implemented in a breadth-first DOM traverse
-    private class FormattingVisitor implements NodeVisitor {
+    private static class FormattingVisitor implements NodeVisitor {
         private static final int maxWidth = 80;
         private int width = 0;
         private StringBuilder accum = new StringBuilder(); // holds the accumulated text
@@ -103,7 +102,7 @@ public class HtmlToPlainText {
                 return; // don't accumulate long runs of empty spaces
 
             if (text.length() + width > maxWidth) { // won't fit, needs to wrap
-                String words[] = text.split("\\s+");
+                String[] words = text.split("\\s+");
                 for (int i = 0; i < words.length; i++) {
                     String word = words[i];
                     boolean last = i == words.length - 1;

@@ -1,23 +1,28 @@
 package org.jsoup.parser;
 
+import org.jsoup.MultiLocaleRule;
+import org.jsoup.MultiLocaleRule.MultiLocaleTest;
+import org.junit.Rule;
 import org.junit.Test;
+
 import static org.junit.Assert.*;
 
 /**
  Tag tests.
  @author Jonathan Hedley, jonathan@hedley.net */
 public class TagTest {
+    @Rule public MultiLocaleRule rule = new MultiLocaleRule();
 
     @Test public void isCaseSensitive() {
         Tag p1 = Tag.valueOf("P");
         Tag p2 = Tag.valueOf("p");
-        assertFalse(p1.equals(p2));
+        assertNotEquals(p1, p2);
     }
 
-    @Test public void canBeInsensitive() {
-        Tag p1 = Tag.valueOf("P", ParseSettings.htmlDefault);
-        Tag p2 = Tag.valueOf("p", ParseSettings.htmlDefault);
-        assertEquals(p1, p2);
+    @Test @MultiLocaleTest public void canBeInsensitive() {
+        Tag script1 = Tag.valueOf("script", ParseSettings.htmlDefault);
+        Tag script2 = Tag.valueOf("SCRIPT", ParseSettings.htmlDefault);
+        assertSame(script1, script2);
     }
 
     @Test public void trims() {
@@ -29,8 +34,8 @@ public class TagTest {
     @Test public void equality() {
         Tag p1 = Tag.valueOf("p");
         Tag p2 = Tag.valueOf("p");
-        assertTrue(p1.equals(p2));
-        assertTrue(p1 == p2);
+        assertEquals(p1, p2);
+        assertSame(p1, p2);
     }
 
     @Test public void divSemantics() {
@@ -69,5 +74,10 @@ public class TagTest {
 
     @Test(expected = IllegalArgumentException.class) public void valueOfChecksNotEmpty() {
         Tag.valueOf(" ");
+    }
+
+    @Test public void knownTags() {
+        assertTrue(Tag.isKnownTag("div"));
+        assertFalse(Tag.isKnownTag("explain"));
     }
 }

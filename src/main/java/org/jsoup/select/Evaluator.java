@@ -6,11 +6,16 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.DocumentType;
 import org.jsoup.nodes.Element;
 import org.jsoup.nodes.Node;
+import org.jsoup.nodes.PseudoTextElement;
+import org.jsoup.nodes.TextNode;
 import org.jsoup.nodes.XmlDeclaration;
 
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import static org.jsoup.internal.Normalizer.lowerCase;
+import static org.jsoup.internal.Normalizer.normalize;
 
 
 /**
@@ -42,7 +47,7 @@ public abstract class Evaluator {
 
         @Override
         public boolean matches(Element root, Element element) {
-            return (element.tagName().equalsIgnoreCase(tagName));
+            return (element.normalName().equals(tagName));
         }
 
         @Override
@@ -64,7 +69,7 @@ public abstract class Evaluator {
 
         @Override
         public boolean matches(Element root, Element element) {
-            return (element.tagName().endsWith(tagName));
+            return (element.normalName().endsWith(tagName));
         }
 
         @Override
@@ -147,14 +152,14 @@ public abstract class Evaluator {
 
         public AttributeStarting(String keyPrefix) {
             Validate.notEmpty(keyPrefix);
-            this.keyPrefix = keyPrefix.toLowerCase();
+            this.keyPrefix = lowerCase(keyPrefix);
         }
 
         @Override
         public boolean matches(Element root, Element element) {
             List<org.jsoup.nodes.Attribute> values = element.attributes().asList();
             for (org.jsoup.nodes.Attribute attribute : values) {
-                if (attribute.getKey().toLowerCase().startsWith(keyPrefix))
+                if (lowerCase(attribute.getKey()).startsWith(keyPrefix))
                     return true;
             }
             return false;
@@ -212,12 +217,12 @@ public abstract class Evaluator {
      */
     public static final class AttributeWithValueStarting extends AttributeKeyPair {
         public AttributeWithValueStarting(String key, String value) {
-            super(key, value);
+            super(key, value, false);
         }
 
         @Override
         public boolean matches(Element root, Element element) {
-            return element.hasAttr(key) && element.attr(key).toLowerCase().startsWith(value); // value is lower case already
+            return element.hasAttr(key) && lowerCase(element.attr(key)).startsWith(value); // value is lower case already
         }
 
         @Override
@@ -232,12 +237,12 @@ public abstract class Evaluator {
      */
     public static final class AttributeWithValueEnding extends AttributeKeyPair {
         public AttributeWithValueEnding(String key, String value) {
-            super(key, value);
+            super(key, value, false);
         }
 
         @Override
         public boolean matches(Element root, Element element) {
-            return element.hasAttr(key) && element.attr(key).toLowerCase().endsWith(value); // value is lower case
+            return element.hasAttr(key) && lowerCase(element.attr(key)).endsWith(value); // value is lower case
         }
 
         @Override
@@ -257,7 +262,7 @@ public abstract class Evaluator {
 
         @Override
         public boolean matches(Element root, Element element) {
-            return element.hasAttr(key) && element.attr(key).toLowerCase().contains(value); // value is lower case
+            return element.hasAttr(key) && lowerCase(element.attr(key)).contains(value); // value is lower case
         }
 
         @Override
@@ -275,7 +280,7 @@ public abstract class Evaluator {
         Pattern pattern;
 
         public AttributeWithValueMatching(String key, Pattern pattern) {
-            this.key = key.trim().toLowerCase();
+            this.key = normalize(key);
             this.pattern = pattern;
         }
 
@@ -299,15 +304,21 @@ public abstract class Evaluator {
         String value;
 
         public AttributeKeyPair(String key, String value) {
+            this(key, value, true);
+        }
+
+        public AttributeKeyPair(String key, String value, boolean trimValue) {
             Validate.notEmpty(key);
             Validate.notEmpty(value);
 
-            this.key = key.trim().toLowerCase();
-            if (value.startsWith("\"") && value.endsWith("\"")
-                    || value.startsWith("'") && value.endsWith("'")) {
+            this.key = normalize(key);
+            boolean isStringLiteral = value.startsWith("'") && value.endsWith("'")
+                                        || value.startsWith("\"") && value.endsWith("\"");
+            if (isStringLiteral) {
                 value = value.substring(1, value.length()-1);
             }
-            this.value = value.trim().toLowerCase();
+
+            this.value = trimValue ? normalize(value) : normalize(value, isStringLiteral);
         }
     }
 
@@ -337,7 +348,7 @@ public abstract class Evaluator {
 
         @Override
         public boolean matches(Element root, Element element) {
-            return element.elementSiblingIndex() < index;
+            return root != element && element.elementSiblingIndex() < index;
         }
 
         @Override
@@ -386,7 +397,7 @@ public abstract class Evaluator {
         }
 
     }
-    
+
     /**
      * Evaluator for matching the last sibling (css :last-child)
      */
@@ -396,13 +407,13 @@ public abstract class Evaluator {
 			final Element p = element.parent();
 			return p != null && !(p instanceof Document) && element.elementSiblingIndex() == p.children().size()-1;
 		}
-    	
+
 		@Override
 		public String toString() {
 			return ":last-child";
 		}
     }
-    
+
     public static final class IsFirstOfType extends IsNthOfType {
 		public IsFirstOfType() {
 			super(0,1);
@@ -412,7 +423,7 @@ public abstract class Evaluator {
 			return ":first-of-type";
 		}
     }
-    
+
     public static final class IsLastOfType extends IsNthLastOfType {
 		public IsLastOfType() {
 			super(0,1);
@@ -423,10 +434,10 @@ public abstract class Evaluator {
 		}
     }
 
-    
+
     public static abstract class CssNthEvaluator extends Evaluator {
     	protected final int a, b;
-    	
+
     	public CssNthEvaluator(int a, int b) {
     		this.a = a;
     		this.b = b;
@@ -434,18 +445,18 @@ public abstract class Evaluator {
     	public CssNthEvaluator(int b) {
     		this(0,b);
     	}
-    	
+
     	@Override
     	public boolean matches(Element root, Element element) {
     		final Element p = element.parent();
     		if (p == null || (p instanceof Document)) return false;
-    		
+
     		final int pos = calculatePosition(root, element);
     		if (a == 0) return pos == b;
-    		
+
     		return (pos-b)*a >= 0 && (pos-b)%a==0;
     	}
-    	
+
 		@Override
 		public String toString() {
 			if (a == 0)
@@ -454,15 +465,15 @@ public abstract class Evaluator {
 				return String.format(":%s(%dn)",getPseudoClass(), a);
 			return String.format(":%s(%dn%+d)", getPseudoClass(),a, b);
 		}
-    	
+
 		protected abstract String getPseudoClass();
 		protected abstract int calculatePosition(Element root, Element element);
     }
-    
-    
+
+
     /**
      * css-compatible Evaluator for :eq (css :nth-child)
-     * 
+     *
      * @see IndexEquals
      */
     public static final class IsNthChild extends CssNthEvaluator {
@@ -475,15 +486,15 @@ public abstract class Evaluator {
 			return element.elementSiblingIndex()+1;
 		}
 
-		
+
 		protected String getPseudoClass() {
 			return "nth-child";
 		}
     }
-    
+
     /**
      * css pseudo class :nth-last-child)
-     * 
+     *
      * @see IndexEquals
      */
     public static final class IsNthLastChild extends CssNthEvaluator {
@@ -495,16 +506,16 @@ public abstract class Evaluator {
         protected int calculatePosition(Element root, Element element) {
         	return element.parent().children().size() - element.elementSiblingIndex();
         }
-        
+
 		@Override
 		protected String getPseudoClass() {
 			return "nth-last-child";
 		}
     }
-    
+
     /**
      * css pseudo class nth-of-type
-     * 
+     *
      */
     public static class IsNthOfType extends CssNthEvaluator {
     	public IsNthOfType(int a, int b) {
@@ -526,13 +537,13 @@ public abstract class Evaluator {
 			return "nth-of-type";
 		}
     }
-    
+
     public static class IsNthLastOfType extends CssNthEvaluator {
 
 		public IsNthLastOfType(int a, int b) {
 			super(a, b);
 		}
-		
+
 		@Override
 		protected int calculatePosition(Element root, Element element) {
 			int pos = 0;
@@ -558,13 +569,13 @@ public abstract class Evaluator {
     		final Element p = element.parent();
     		return p != null && !(p instanceof Document) && element.elementSiblingIndex() == 0;
     	}
-    	
+
     	@Override
     	public String toString() {
     		return ":first-child";
     	}
     }
-    
+
     /**
      * css3 pseudo-class :root
      * @see <a href="http://www.w3.org/TR/selectors/#root-pseudo">:root selector</a>
@@ -586,7 +597,7 @@ public abstract class Evaluator {
 		@Override
 		public boolean matches(Element root, Element element) {
 			final Element p = element.parent();
-			return p!=null && !(p instanceof Document) && element.siblingElements().size() == 0;
+			return p!=null && !(p instanceof Document) && element.siblingElements().isEmpty();
 		}
     	@Override
     	public String toString() {
@@ -599,7 +610,7 @@ public abstract class Evaluator {
 		public boolean matches(Element root, Element element) {
 			final Element p = element.parent();
 			if (p==null || p instanceof Document) return false;
-			
+
 			int pos = 0;
         	Elements family = p.children();
             for (Element el : family) {
@@ -648,12 +659,12 @@ public abstract class Evaluator {
         private String searchText;
 
         public ContainsText(String searchText) {
-            this.searchText = searchText.toLowerCase();
+            this.searchText = lowerCase(searchText);
         }
 
         @Override
         public boolean matches(Element root, Element element) {
-            return (element.text().toLowerCase().contains(searchText));
+            return lowerCase(element.text()).contains(searchText);
         }
 
         @Override
@@ -669,12 +680,12 @@ public abstract class Evaluator {
         private String searchText;
 
         public ContainsData(String searchText) {
-            this.searchText = searchText.toLowerCase();
+            this.searchText = lowerCase(searchText);
         }
 
         @Override
         public boolean matches(Element root, Element element) {
-            return (element.data().toLowerCase().contains(searchText));
+            return lowerCase(element.data()).contains(searchText);
         }
 
         @Override
@@ -690,12 +701,12 @@ public abstract class Evaluator {
         private String searchText;
 
         public ContainsOwnText(String searchText) {
-            this.searchText = searchText.toLowerCase();
+            this.searchText = lowerCase(searchText);
         }
 
         @Override
         public boolean matches(Element root, Element element) {
-            return (element.ownText().toLowerCase().contains(searchText));
+            return lowerCase(element.ownText()).contains(searchText);
         }
 
         @Override
@@ -745,6 +756,29 @@ public abstract class Evaluator {
         @Override
         public String toString() {
             return String.format(":matchesOwn(%s)", pattern);
+        }
+    }
+
+    public static final class MatchText extends Evaluator {
+
+        @Override
+        public boolean matches(Element root, Element element) {
+            if (element instanceof PseudoTextElement)
+                return true;
+
+            List<TextNode> textNodes = element.textNodes();
+            for (TextNode textNode : textNodes) {
+                PseudoTextElement pel = new PseudoTextElement(
+                    org.jsoup.parser.Tag.valueOf(element.tagName()), element.baseUri(), element.attributes());
+                textNode.replaceWith(pel);
+                pel.appendChild(textNode);
+            }
+            return false;
+        }
+
+        @Override
+        public String toString() {
+            return ":matchText";
         }
     }
 }

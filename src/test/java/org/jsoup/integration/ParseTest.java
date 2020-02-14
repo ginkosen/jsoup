@@ -8,6 +8,8 @@ import org.junit.Test;
 
 import java.io.*;
 import java.net.URISyntaxException;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.Assert.*;
 
@@ -63,14 +65,6 @@ public class ParseTest {
                 results.get(0).attr("href"));
         assertEquals("http://www.apple.com/itunes/",
                 results.get(1).attr("href"));
-    }
-
-    @Test
-    public void testBinary() throws IOException {
-        File in = getFile("/htmltests/thumb.jpg");
-        Document doc = Jsoup.parse(in, "UTF-8");
-        // nothing useful, but did not blow up
-        assertTrue(doc.text().contains("gd-jpeg"));
     }
 
     @Test
@@ -168,21 +162,27 @@ public class ParseTest {
         assertEquals("In July, GM said its electric Chevrolet Volt will be sold in the United States at $41,000 -- $8,000 more than its nearest competitor, the Nissan Leaf.", p.text());
     }
 
+    @Test
+    public void testLowercaseUtf8Charset() throws IOException {
+        File in = getFile("/htmltests/lowercase-charset-test.html");
+        Document doc = Jsoup.parse(in, null);
+
+        Element form = doc.select("#form").first();
+        assertEquals(2, form.children().size());
+        assertEquals("UTF-8", doc.outputSettings().charset().name());
+    }
+
     public static File getFile(String resourceName) {
         try {
-            File file = new File(ParseTest.class.getResource(resourceName).toURI());
-            return file;
+            URL resource = ParseTest.class.getResource(resourceName);
+            return resource != null ? new File(resource.toURI()) : new File("/404");
         } catch (URISyntaxException e) {
             throw new IllegalStateException(e);
         }
     }
 
     public static InputStream inputStreamFrom(String s) {
-        try {
-            return new ByteArrayInputStream(s.getBytes("UTF-8"));
-        } catch (UnsupportedEncodingException e) {
-            throw new RuntimeException(e);
-        }
+        return new ByteArrayInputStream(s.getBytes(StandardCharsets.UTF_8));
     }
 
 }

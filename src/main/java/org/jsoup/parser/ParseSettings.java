@@ -1,7 +1,8 @@
 package org.jsoup.parser;
 
-import org.jsoup.nodes.Attribute;
 import org.jsoup.nodes.Attributes;
+
+import static org.jsoup.internal.Normalizer.lowerCase;
 
 /**
  * Controls parser settings, to optionally preserve tag and/or attribute name case.
@@ -25,6 +26,20 @@ public class ParseSettings {
     private final boolean preserveAttributeCase;
 
     /**
+     * Returns true if preserving tag name case.
+     */
+    public boolean preserveTagCase() {
+        return preserveTagCase;
+    }
+
+    /**
+     * Returns true if preserving attribute case.
+     */
+    public boolean preserveAttributeCase() {
+        return preserveAttributeCase;
+    }
+
+    /**
      * Define parse settings.
      * @param tag preserve tag case?
      * @param attribute preserve attribute name case?
@@ -34,25 +49,29 @@ public class ParseSettings {
         preserveAttributeCase = attribute;
     }
 
-    String normalizeTag(String name) {
+    /**
+     * Normalizes a tag name according to the case preservation setting.
+     */
+    public String normalizeTag(String name) {
         name = name.trim();
         if (!preserveTagCase)
-            name = name.toLowerCase();
+            name = lowerCase(name);
         return name;
     }
 
-    String normalizeAttribute(String name) {
+    /**
+     * Normalizes an attribute according to the case preservation setting.
+     */
+    public String normalizeAttribute(String name) {
         name = name.trim();
         if (!preserveAttributeCase)
-            name = name.toLowerCase();
+            name = lowerCase(name);
         return name;
     }
 
     Attributes normalizeAttributes(Attributes attributes) {
-        if (!preserveAttributeCase) {
-            for (Attribute attr : attributes) {
-                attr.setKey(attr.getKey().toLowerCase());
-            }
+        if (attributes != null && !preserveAttributeCase) {
+            attributes.normalize();
         }
         return attributes;
     }

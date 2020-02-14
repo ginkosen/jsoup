@@ -1,7 +1,11 @@
 package org.jsoup.parser;
 
+import org.jsoup.UncheckedIOException;
 import org.jsoup.helper.Validate;
 
+import java.io.IOException;
+import java.io.Reader;
+import java.io.StringReader;
 import java.util.Arrays;
 import java.util.Locale;
 
@@ -10,18 +14,69 @@ import java.util.Locale;
  */
 public final class CharacterReader {
     static final char EOF = (char) -1;
-    private static final int maxCacheLen = 12;
+    private static final int maxStringCacheLen = 12;
+    static final int maxBufferLen = 1024 * 32; // visible for testing
+    static final int readAheadLimit = (int) (maxBufferLen * 0.75); // visible for testing
+    private static final int minReadAheadLen = 1024; // the minimum mark length supported. No HTML entities can be larger than this.
 
-    private final char[] input;
-    private final int length;
-    private int pos = 0;
-    private int mark = 0;
+    private final char[] charBuf;
+    private final Reader reader;
+    private int bufLength;
+    private int bufSplitPoint;
+    private int bufPos;
+    private int readerPos;
+    private int bufMark = -1;
     private final String[] stringCache = new String[512]; // holds reused strings in this doc, to lessen garbage
 
-    public CharacterReader(String input) {
+    public CharacterReader(Reader input, int sz) {
         Validate.notNull(input);
-        this.input = input.toCharArray();
-        this.length = this.input.length;
+        Validate.isTrue(input.markSupported());
+        reader = input;
+        charBuf = new char[sz > maxBufferLen ? maxBufferLen : sz];
+        bufferUp();
+    }
+
+    public CharacterReader(Reader input) {
+        this(input, maxBufferLen);
+    }
+
+    public CharacterReader(String input) {
+        this(new StringReader(input), input.length());
+    }
+
+    private boolean readFully; // if the underlying stream has been completely read, no value in further buffering
+    private void bufferUp() {
+        if (readFully)
+            return;
+
+        final int pos = bufPos;
+        if (pos < bufSplitPoint)
+            return;
+
+        try {
+            final long skipped = reader.skip(pos);
+            reader.mark(maxBufferLen);
+            int read = 0;
+            while (read <= minReadAheadLen) {
+                int thisRead = reader.read(charBuf, read, charBuf.length - read);
+                if (thisRead == -1)
+                    readFully = true;
+                if (thisRead <= 0)
+                    break;
+                read += thisRead;
+            }
+            reader.reset();
+            if (read > 0) {
+                Validate.isTrue(skipped == pos); // Previously asserted that there is room in buf to skip, so this will be a WTF
+                bufLength = read;
+                readerPos += pos;
+                bufPos = 0;
+                bufMark = -1;
+                bufSplitPoint = bufLength > readAheadLimit ? readAheadLimit : bufLength;
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     /**
@@ -29,7 +84,7 @@ public final class CharacterReader {
      * @return current position
      */
     public int pos() {
-        return pos;
+        return readerPos + bufPos;
     }
 
     /**
@@ -37,7 +92,12 @@ public final class CharacterReader {
      * @return true if nothing left to read.
      */
     public boolean isEmpty() {
-        return pos >= length;
+        bufferUp();
+        return bufPos >= bufLength;
+    }
+
+    private boolean isEmptyNoBufferUp() {
+        return bufPos >= bufLength;
     }
 
     /**
@@ -45,36 +105,50 @@ public final class CharacterReader {
      * @return char
      */
     public char current() {
-        return pos >= length ? EOF : input[pos];
+        bufferUp();
+        return isEmptyNoBufferUp() ? EOF : charBuf[bufPos];
     }
 
     char consume() {
-        char val = pos >= length ? EOF : input[pos];
-        pos++;
+        bufferUp();
+        char val = isEmptyNoBufferUp() ? EOF : charBuf[bufPos];
+        bufPos++;
         return val;
     }
 
     void unconsume() {
-        pos--;
+        if (bufPos < 1)
+            throw new UncheckedIOException(new IOException("No buffer left to unconsume"));
+
+        bufPos--;
     }
 
     /**
      * Moves the current position by one.
      */
     public void advance() {
-        pos++;
+        bufPos++;
     }
 
     void mark() {
-        mark = pos;
+        // make sure there is enough look ahead capacity
+        if (bufLength - bufPos < minReadAheadLen)
+            bufSplitPoint = 0;
+
+        bufferUp();
+        bufMark = bufPos;
+    }
+
+    void unmark() {
+        bufMark = -1;
     }
 
     void rewindToMark() {
-        pos = mark;
-    }
+        if (bufMark == -1)
+            throw new UncheckedIOException(new IOException("Mark invalid"));
 
-    String consumeAsString() {
-        return new String(input, pos++, 1);
+        bufPos = bufMark;
+        unmark();
     }
 
     /**
@@ -84,9 +158,10 @@ public final class CharacterReader {
      */
     int nextIndexOf(char c) {
         // doesn't handle scanning for surrogates
-        for (int i = pos; i < length; i++) {
-            if (c == input[i])
-                return i - pos;
+        bufferUp();
+        for (int i = bufPos; i < bufLength; i++) {
+            if (c == charBuf[i])
+                return i - bufPos;
         }
         return -1;
     }
@@ -98,18 +173,19 @@ public final class CharacterReader {
      * @return offset between current position and next instance of target. -1 if not found.
      */
     int nextIndexOf(CharSequence seq) {
+        bufferUp();
         // doesn't handle scanning for surrogates
         char startChar = seq.charAt(0);
-        for (int offset = pos; offset < length; offset++) {
+        for (int offset = bufPos; offset < bufLength; offset++) {
             // scan to first instance of startchar:
-            if (startChar != input[offset])
-                while(++offset < length && startChar != input[offset]) { /* empty */ }
+            if (startChar != charBuf[offset])
+                while(++offset < bufLength && startChar != charBuf[offset]) { /* empty */ }
             int i = offset + 1;
             int last = i + seq.length()-1;
-            if (offset < length && last <= length) {
-                for (int j = 1; i < last && seq.charAt(j) == input[i]; i++, j++) { /* empty */ }
+            if (offset < bufLength && last <= bufLength) {
+                for (int j = 1; i < last && seq.charAt(j) == charBuf[i]; i++, j++) { /* empty */ }
                 if (i == last) // found full sequence
-                    return offset - pos;
+                    return offset - bufPos;
             }
         }
         return -1;
@@ -123,8 +199,8 @@ public final class CharacterReader {
     public String consumeTo(char c) {
         int offset = nextIndexOf(c);
         if (offset != -1) {
-            String consumed = cacheString(pos, offset);
-            pos += offset;
+            String consumed = cacheString(charBuf, stringCache, bufPos, offset);
+            bufPos += offset;
             return consumed;
         } else {
             return consumeToEnd();
@@ -134,11 +210,19 @@ public final class CharacterReader {
     String consumeTo(String seq) {
         int offset = nextIndexOf(seq);
         if (offset != -1) {
-            String consumed = cacheString(pos, offset);
-            pos += offset;
+            String consumed = cacheString(charBuf, stringCache, bufPos, offset);
+            bufPos += offset;
             return consumed;
-        } else {
+        } else if (bufLength - bufPos < seq.length()) {
+            // nextIndexOf() did a bufferUp(), so if the buffer is shorter than the search string, we must be at EOF
             return consumeToEnd();
+        } else {
+            // the string we're looking for may be straddling a buffer boundary, so keep (length - 1) characters
+            // unread in case they contain the beginning of the search string
+            int endPos = bufLength - seq.length() + 1;
+            String consumed = cacheString(charBuf, stringCache, bufPos, endPos - bufPos);
+            bufPos = endPos;
+            return consumed;
         }
     }
 
@@ -148,154 +232,208 @@ public final class CharacterReader {
      * @return characters read up to the matched delimiter.
      */
     public String consumeToAny(final char... chars) {
+        bufferUp();
+        int pos = bufPos;
         final int start = pos;
-        final int remaining = length;
-        final char[] val = input;
+        final int remaining = bufLength;
+        final char[] val = charBuf;
+        final int charLen = chars.length;
+        int i;
 
         OUTER: while (pos < remaining) {
-            for (char c : chars) {
-                if (val[pos] == c)
+            for (i = 0; i < charLen; i++) {
+                if (val[pos] == chars[i])
                     break OUTER;
             }
             pos++;
         }
 
-        return pos > start ? cacheString(start, pos-start) : "";
+        bufPos = pos;
+        return pos > start ? cacheString(charBuf, stringCache, start, pos -start) : "";
     }
 
     String consumeToAnySorted(final char... chars) {
+        bufferUp();
+        int pos = bufPos;
         final int start = pos;
-        final int remaining = length;
-        final char[] val = input;
+        final int remaining = bufLength;
+        final char[] val = charBuf;
 
         while (pos < remaining) {
             if (Arrays.binarySearch(chars, val[pos]) >= 0)
                 break;
             pos++;
         }
-
-        return pos > start ? cacheString(start, pos-start) : "";
+        bufPos = pos;
+        return bufPos > start ? cacheString(charBuf, stringCache, start, pos -start) : "";
     }
 
     String consumeData() {
         // &, <, null
+        //bufferUp(); // no need to bufferUp, just called consume()
+        int pos = bufPos;
         final int start = pos;
-        final int remaining = length;
-        final char[] val = input;
+        final int remaining = bufLength;
+        final char[] val = charBuf;
 
-        while (pos < remaining) {
-            final char c = val[pos];
-            if (c == '&'|| c ==  '<' || c ==  TokeniserState.nullChar)
-                break;
-            pos++;
+        OUTER: while (pos < remaining) {
+            switch (val[pos]) {
+                case '&':
+                case '<':
+                case TokeniserState.nullChar:
+                    break OUTER;
+                default:
+                    pos++;
+            }
         }
+        bufPos = pos;
+        return pos > start ? cacheString(charBuf, stringCache, start, pos -start) : "";
+    }
 
-        return pos > start ? cacheString(start, pos-start) : "";
+    String consumeRawData() {
+        // <, null
+        //bufferUp(); // no need to bufferUp, just called consume()
+        int pos = bufPos;
+        final int start = pos;
+        final int remaining = bufLength;
+        final char[] val = charBuf;
+
+        OUTER: while (pos < remaining) {
+            switch (val[pos]) {
+                case '<':
+                case TokeniserState.nullChar:
+                    break OUTER;
+                default:
+                    pos++;
+            }
+        }
+        bufPos = pos;
+        return pos > start ? cacheString(charBuf, stringCache, start, pos -start) : "";
     }
 
     String consumeTagName() {
         // '\t', '\n', '\r', '\f', ' ', '/', '>', nullChar
+        // NOTE: out of spec, added '<' to fix common author bugs
+        bufferUp();
+        int pos = bufPos;
         final int start = pos;
-        final int remaining = length;
-        final char[] val = input;
+        final int remaining = bufLength;
+        final char[] val = charBuf;
 
-        while (pos < remaining) {
-            final char c = val[pos];
-            if (c == '\t'|| c ==  '\n'|| c ==  '\r'|| c ==  '\f'|| c ==  ' '|| c ==  '/'|| c ==  '>'|| c ==  TokeniserState.nullChar)
-                break;
+        OUTER: while (pos < remaining) {
+            switch (val[pos]) {
+                case '\t':
+                case '\n':
+                case '\r':
+                case '\f':
+                case ' ':
+                case '/':
+                case '>':
+                case '<':
+                case TokeniserState.nullChar:
+                    break OUTER;
+            }
             pos++;
         }
 
-        return pos > start ? cacheString(start, pos-start) : "";
+        bufPos = pos;
+        return pos > start ? cacheString(charBuf, stringCache, start, pos -start) : "";
     }
 
     String consumeToEnd() {
-        String data = cacheString(pos, length-pos);
-        pos = length;
+        bufferUp();
+        String data = cacheString(charBuf, stringCache, bufPos, bufLength - bufPos);
+        bufPos = bufLength;
         return data;
     }
 
     String consumeLetterSequence() {
-        int start = pos;
-        while (pos < length) {
-            char c = input[pos];
+        bufferUp();
+        int start = bufPos;
+        while (bufPos < bufLength) {
+            char c = charBuf[bufPos];
             if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || Character.isLetter(c))
-                pos++;
+                bufPos++;
             else
                 break;
         }
 
-        return cacheString(start, pos - start);
+        return cacheString(charBuf, stringCache, start, bufPos - start);
     }
 
     String consumeLetterThenDigitSequence() {
-        int start = pos;
-        while (pos < length) {
-            char c = input[pos];
+        bufferUp();
+        int start = bufPos;
+        while (bufPos < bufLength) {
+            char c = charBuf[bufPos];
             if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || Character.isLetter(c))
-                pos++;
+                bufPos++;
             else
                 break;
         }
-        while (!isEmpty()) {
-            char c = input[pos];
+        while (!isEmptyNoBufferUp()) {
+            char c = charBuf[bufPos];
             if (c >= '0' && c <= '9')
-                pos++;
+                bufPos++;
             else
                 break;
         }
 
-        return cacheString(start, pos - start);
+        return cacheString(charBuf, stringCache, start, bufPos - start);
     }
 
     String consumeHexSequence() {
-        int start = pos;
-        while (pos < length) {
-            char c = input[pos];
+        bufferUp();
+        int start = bufPos;
+        while (bufPos < bufLength) {
+            char c = charBuf[bufPos];
             if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))
-                pos++;
+                bufPos++;
             else
                 break;
         }
-        return cacheString(start, pos - start);
+        return cacheString(charBuf, stringCache, start, bufPos - start);
     }
 
     String consumeDigitSequence() {
-        int start = pos;
-        while (pos < length) {
-            char c = input[pos];
+        bufferUp();
+        int start = bufPos;
+        while (bufPos < bufLength) {
+            char c = charBuf[bufPos];
             if (c >= '0' && c <= '9')
-                pos++;
+                bufPos++;
             else
                 break;
         }
-        return cacheString(start, pos - start);
+        return cacheString(charBuf, stringCache, start, bufPos - start);
     }
 
     boolean matches(char c) {
-        return !isEmpty() && input[pos] == c;
+        return !isEmpty() && charBuf[bufPos] == c;
 
     }
 
     boolean matches(String seq) {
+        bufferUp();
         int scanLength = seq.length();
-        if (scanLength > length - pos)
+        if (scanLength > bufLength - bufPos)
             return false;
 
         for (int offset = 0; offset < scanLength; offset++)
-            if (seq.charAt(offset) != input[pos+offset])
+            if (seq.charAt(offset) != charBuf[bufPos +offset])
                 return false;
         return true;
     }
 
     boolean matchesIgnoreCase(String seq) {
+        bufferUp();
         int scanLength = seq.length();
-        if (scanLength > length - pos)
+        if (scanLength > bufLength - bufPos)
             return false;
 
         for (int offset = 0; offset < scanLength; offset++) {
             char upScan = Character.toUpperCase(seq.charAt(offset));
-            char upTarget = Character.toUpperCase(input[pos + offset]);
+            char upTarget = Character.toUpperCase(charBuf[bufPos + offset]);
             if (upScan != upTarget)
                 return false;
         }
@@ -306,7 +444,8 @@ public final class CharacterReader {
         if (isEmpty())
             return false;
 
-        char c = input[pos];
+        bufferUp();
+        char c = charBuf[bufPos];
         for (char seek : seq) {
             if (seek == c)
                 return true;
@@ -315,26 +454,28 @@ public final class CharacterReader {
     }
 
     boolean matchesAnySorted(char[] seq) {
-        return !isEmpty() && Arrays.binarySearch(seq, input[pos]) >= 0;
+        bufferUp();
+        return !isEmpty() && Arrays.binarySearch(seq, charBuf[bufPos]) >= 0;
     }
 
     boolean matchesLetter() {
         if (isEmpty())
             return false;
-        char c = input[pos];
+        char c = charBuf[bufPos];
         return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || Character.isLetter(c);
     }
 
     boolean matchesDigit() {
         if (isEmpty())
             return false;
-        char c = input[pos];
+        char c = charBuf[bufPos];
         return (c >= '0' && c <= '9');
     }
 
     boolean matchConsume(String seq) {
+        bufferUp();
         if (matches(seq)) {
-            pos += seq.length();
+            bufPos += seq.length();
             return true;
         } else {
             return false;
@@ -343,7 +484,7 @@ public final class CharacterReader {
 
     boolean matchConsumeIgnoreCase(String seq) {
         if (matchesIgnoreCase(seq)) {
-            pos += seq.length();
+            bufPos += seq.length();
             return true;
         } else {
             return false;
@@ -359,7 +500,7 @@ public final class CharacterReader {
 
     @Override
     public String toString() {
-        return new String(input, pos, length - pos);
+        return new String(charBuf, bufPos, bufLength - bufPos);
     }
 
     /**
@@ -369,34 +510,33 @@ public final class CharacterReader {
      * That saves both having to create objects as hash keys, and running through the entry list, at the expense of
      * some more duplicates.
      */
-    private String cacheString(final int start, final int count) {
-        final char[] val = input;
-        final String[] cache = stringCache;
-
+    private static String cacheString(final char[] charBuf, final String[] stringCache, final int start, final int count) {
         // limit (no cache):
-        if (count > maxCacheLen)
-            return new String(val, start, count);
+        if (count > maxStringCacheLen)
+            return new String(charBuf, start, count);
+        if (count < 1)
+            return "";
 
         // calculate hash:
         int hash = 0;
         int offset = start;
         for (int i = 0; i < count; i++) {
-            hash = 31 * hash + val[offset++];
+            hash = 31 * hash + charBuf[offset++];
         }
 
         // get from cache
-        final int index = hash & cache.length - 1;
-        String cached = cache[index];
+        final int index = hash & stringCache.length - 1;
+        String cached = stringCache[index];
 
         if (cached == null) { // miss, add
-            cached = new String(val, start, count);
-            cache[index] = cached;
+            cached = new String(charBuf, start, count);
+            stringCache[index] = cached;
         } else { // hashcode hit, check equality
-            if (rangeEquals(start, count, cached)) { // hit
+            if (rangeEquals(charBuf, start, count, cached)) { // hit
                 return cached;
             } else { // hashcode conflict
-                cached = new String(val, start, count);
-                cache[index] = cached; // update the cache, as recently used strings are more likely to show up again
+                cached = new String(charBuf, start, count);
+                stringCache[index] = cached; // update the cache, as recently used strings are more likely to show up again
             }
         }
         return cached;
@@ -405,17 +545,21 @@ public final class CharacterReader {
     /**
      * Check if the value of the provided range equals the string.
      */
-    boolean rangeEquals(final int start, int count, final String cached) {
+    static boolean rangeEquals(final char[] charBuf, final int start, int count, final String cached) {
         if (count == cached.length()) {
-            char one[] = input;
             int i = start;
             int j = 0;
             while (count-- != 0) {
-                if (one[i++] != cached.charAt(j++))
+                if (charBuf[i++] != cached.charAt(j++))
                     return false;
             }
             return true;
         }
         return false;
+    }
+
+    // just used for testing
+    boolean rangeEquals(final int start, final int count, final String cached) {
+        return rangeEquals(charBuf, start, count, cached);
     }
 }

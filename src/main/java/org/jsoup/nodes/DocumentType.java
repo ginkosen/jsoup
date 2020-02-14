@@ -1,14 +1,16 @@
 package org.jsoup.nodes;
 
-import java.io.IOException;
+import org.jsoup.internal.StringUtil;
+import org.jsoup.helper.Validate;
+import org.jsoup.nodes.Document.OutputSettings.Syntax;
 
-import org.jsoup.helper.StringUtil;
-import org.jsoup.nodes.Document.OutputSettings.*;
+import java.io.IOException;
 
 /**
  * A {@code <!DOCTYPE>} node.
  */
-public class DocumentType extends Node {
+public class DocumentType extends LeafNode {
+    // todo needs a bit of a chunky cleanup. this level of detail isn't needed
     public static final String PUBLIC_KEY = "PUBLIC";
     public static final String SYSTEM_KEY = "SYSTEM";
     private static final String NAME = "name";
@@ -22,35 +24,51 @@ public class DocumentType extends Node {
      * @param name the doctype's name
      * @param publicId the doctype's public ID
      * @param systemId the doctype's system ID
-     * @param baseUri the doctype's base URI
      */
-    public DocumentType(String name, String publicId, String systemId, String baseUri) {
-        super(baseUri);
-
+    public DocumentType(String name, String publicId, String systemId) {
+        Validate.notNull(name);
+        Validate.notNull(publicId);
+        Validate.notNull(systemId);
         attr(NAME, name);
         attr(PUBLIC_ID, publicId);
+        attr(SYSTEM_ID, systemId);
+        updatePubSyskey();
+    }
+
+    public void setPubSysKey(String value) {
+        if (value != null)
+            attr(PUB_SYS_KEY, value);
+    }
+
+    private void updatePubSyskey() {
         if (has(PUBLIC_ID)) {
             attr(PUB_SYS_KEY, PUBLIC_KEY);
-        }
-        attr(SYSTEM_ID, systemId);
+        } else if (has(SYSTEM_ID))
+            attr(PUB_SYS_KEY, SYSTEM_KEY);
     }
 
     /**
-     * Create a new doctype element.
-     * @param name the doctype's name
-     * @param publicId the doctype's public ID
-     * @param systemId the doctype's system ID
-     * @param baseUri the doctype's base URI
+     * Get this doctype's name (when set, or empty string)
+     * @return doctype name
      */
-    public DocumentType(String name, String pubSysKey, String publicId, String systemId, String baseUri) {
-        super(baseUri);
+    public String name() {
+        return attr(NAME);
+    }
 
-        attr(NAME, name);
-        if (pubSysKey != null) {
-            attr(PUB_SYS_KEY, pubSysKey);
-        }
-        attr(PUBLIC_ID, publicId);
-        attr(SYSTEM_ID, systemId);
+    /**
+     * Get this doctype's Public ID (when set, or empty string)
+     * @return doctype Public ID
+     */
+    public String publicId() {
+        return attr(PUBLIC_ID);
+    }
+
+    /**
+     * Get this doctype's System ID (when set, or empty string)
+     * @return doctype System ID
+     */
+    public String systemId() {
+        return attr(SYSTEM_ID);
     }
 
     @Override

@@ -1,15 +1,12 @@
 package org.jsoup.nodes;
 
 import org.jsoup.SerializationException;
-import org.jsoup.helper.DataUtil;
-import org.jsoup.helper.StringUtil;
+import org.jsoup.internal.StringUtil;
+import org.jsoup.helper.Validate;
 import org.jsoup.parser.CharacterReader;
 import org.jsoup.parser.Parser;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 import java.nio.charset.CharsetEncoder;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -18,28 +15,30 @@ import static org.jsoup.nodes.Entities.EscapeMode.base;
 import static org.jsoup.nodes.Entities.EscapeMode.extended;
 
 /**
- * HTML entities, and escape routines.
- * Source: <a href="http://www.w3.org/TR/html5/named-character-references.html#named-character-references">W3C HTML
- * named character references</a>.
+ * HTML entities, and escape routines. Source: <a href="http://www.w3.org/TR/html5/named-character-references.html#named-character-references">W3C
+ * HTML named character references</a>.
  */
 public class Entities {
     private static final int empty = -1;
     private static final String emptyName = "";
     static final int codepointRadix = 36;
+    private static final char[] codeDelims = {',', ';'};
+    private static final HashMap<String, String> multipoints = new HashMap<>(); // name -> multiple character references
+    private static final Document.OutputSettings DefaultOutput = new Document.OutputSettings();
 
     public enum EscapeMode {
         /**
          * Restricted entities suitable for XHTML output: lt, gt, amp, and quot only.
          */
-        xhtml("entities-xhtml.properties", 4),
+        xhtml(EntitiesData.xmlPoints, 4),
         /**
          * Default HTML output entities.
          */
-        base("entities-base.properties", 106),
+        base(EntitiesData.basePoints, 106),
         /**
          * Complete HTML entities.
          */
-        extended("entities-full.properties", 2125);
+        extended(EntitiesData.fullPoints, 2125);
 
         // table of named references to their codepoints. sorted so we can binary search. built by BuildEntities.
         private String[] nameKeys;
@@ -74,8 +73,6 @@ public class Entities {
         }
     }
 
-    private static final HashMap<String, String> multipoints = new HashMap<String, String>(); // name -> multiple character references
-
     private Entities() {
     }
 
@@ -98,17 +95,6 @@ public class Entities {
      */
     public static boolean isBaseNamedEntity(final String name) {
         return base.codepointForName(name) != empty;
-    }
-
-    /**
-     * Get the Character value of the named entity
-     *
-     * @param name named entity (e.g. "lt" or "amp")
-     * @return the Character value of the named entity (e.g. '{@literal <}' or '{@literal &}')
-     * @deprecated does not support characters outside the BMP or multiple character names
-     */
-    public static Character getCharacterByName(String name) {
-        return (char) extended.codepointForName(name);
     }
 
     /**
@@ -142,14 +128,34 @@ public class Entities {
         return 0;
     }
 
-    static String escape(String string, Document.OutputSettings out) {
-        StringBuilder accum = new StringBuilder(string.length() * 2);
+    /**
+     * HTML escape an input string. That is, {@code <} is returned as {@code &lt;}
+     *
+     * @param string the un-escaped string to escape
+     * @param out the output settings to use
+     * @return the escaped string
+     */
+    public static String escape(String string, Document.OutputSettings out) {
+        if (string == null)
+            return "";
+        StringBuilder accum = StringUtil.borrowBuilder();
         try {
             escape(accum, string, out, false, false, false);
         } catch (IOException e) {
             throw new SerializationException(e); // doesn't happen
         }
-        return accum.toString();
+        return StringUtil.releaseBuilder(accum);
+    }
+
+    /**
+     * HTML escape an input string, using the default settings (UTF-8, base entities). That is, {@code <} is returned as
+     * {@code &lt;}
+     *
+     * @param string the un-escaped string to escape
+     * @return the escaped string
+     */
+    public static String escape(String string) {
+        return escape(string, DefaultOutput);
     }
 
     // this method is ugly, and does a lot. but other breakups cause rescanning and stringbuilder generations
@@ -160,7 +166,7 @@ public class Entities {
         boolean reachedNonWhite = false;
         final EscapeMode escapeMode = out.escapeMode();
         final CharsetEncoder encoder = out.encoder();
-        final CoreCharset coreCharset = CoreCharset.byName(encoder.charset().name());
+        final CoreCharset coreCharset = out.coreCharset; // init in out.prepareEncoder()
         final int length = string.length();
 
         int codePoint;
@@ -230,13 +236,19 @@ public class Entities {
 
     private static void appendEncoded(Appendable accum, EscapeMode escapeMode, int codePoint) throws IOException {
         final String name = escapeMode.nameForCodepoint(codePoint);
-        if (name != emptyName) // ok for identity check
+        if (!emptyName.equals(name)) // ok for identity check
             accum.append('&').append(name).append(';');
         else
             accum.append("&#x").append(Integer.toHexString(codePoint)).append(';');
     }
 
-    static String unescape(String string) {
+    /**
+     * Un-escape an HTML escaped string. That is, {@code &lt;} is returned as {@code <}.
+     *
+     * @param string the HTML string to un-escape
+     * @return the unescaped string
+     */
+    public static String unescape(String string) {
         return unescape(string, false);
     }
 
@@ -276,10 +288,10 @@ public class Entities {
         }
     }
 
-    private enum CoreCharset {
+    enum CoreCharset {
         ascii, utf, fallback;
 
-        private static CoreCharset byName(String name) {
+        static CoreCharset byName(final String name) {
             if (name.equals("US-ASCII"))
                 return ascii;
             if (name.startsWith("UTF-")) // covers UTF-8, UTF-16, et al
@@ -288,61 +300,45 @@ public class Entities {
         }
     }
 
-    private static final char[] codeDelims = {',', ';'};
-
-    private static void load(EscapeMode e, String file, int size) {
+    private static void load(EscapeMode e, String pointsData, int size) {
         e.nameKeys = new String[size];
         e.codeVals = new int[size];
         e.codeKeys = new int[size];
         e.nameVals = new String[size];
 
-        InputStream stream = Entities.class.getResourceAsStream(file);
-        if (stream == null)
-            throw new IllegalStateException("Could not read resource " + file + ". Make sure you copy resources for " + Entities.class.getCanonicalName());
-
         int i = 0;
-        try {
-            ByteBuffer bytes = DataUtil.readToByteBuffer(stream, 0);
-            String contents = Charset.forName("ascii").decode(bytes).toString();
-            CharacterReader reader = new CharacterReader(contents);
+        CharacterReader reader = new CharacterReader(pointsData);
 
-            while (!reader.isEmpty()) {
-                // NotNestedLessLess=10913,824;1887
+        while (!reader.isEmpty()) {
+            // NotNestedLessLess=10913,824;1887&
 
-                final String name = reader.consumeTo('=');
+            final String name = reader.consumeTo('=');
+            reader.advance();
+            final int cp1 = Integer.parseInt(reader.consumeToAny(codeDelims), codepointRadix);
+            final char codeDelim = reader.current();
+            reader.advance();
+            final int cp2;
+            if (codeDelim == ',') {
+                cp2 = Integer.parseInt(reader.consumeTo(';'), codepointRadix);
                 reader.advance();
-                final int cp1 = Integer.parseInt(reader.consumeToAny(codeDelims), codepointRadix);
-                final char codeDelim = reader.current();
-                reader.advance();
-                final int cp2;
-                if (codeDelim == ',') {
-                    cp2 = Integer.parseInt(reader.consumeTo(';'), codepointRadix);
-                    reader.advance();
-                } else {
-                    cp2 = empty;
-                }
-                String indexS = reader.consumeTo('\n');
-                // default git checkout on windows will add a \r there, so remove
-                if (indexS.charAt(indexS.length() - 1) == '\r') {
-                    indexS = indexS.substring(0, indexS.length() - 1);
-                }
-                final int index = Integer.parseInt(indexS, codepointRadix);
-                reader.advance();
-
-                e.nameKeys[i] = name;
-                e.codeVals[i] = cp1;
-                e.codeKeys[index] = cp1;
-                e.nameVals[index] = name;
-
-                if (cp2 != empty) {
-                    multipoints.put(name, new String(new int[]{cp1, cp2}, 0, 2));
-                }
-                i++;
-
-
+            } else {
+                cp2 = empty;
             }
-        } catch (IOException err) {
-            throw new IllegalStateException("Error reading resource " + file);
+            final String indexS = reader.consumeTo('&');
+            final int index = Integer.parseInt(indexS, codepointRadix);
+            reader.advance();
+
+            e.nameKeys[i] = name;
+            e.codeVals[i] = cp1;
+            e.codeKeys[index] = cp1;
+            e.nameVals[index] = name;
+
+            if (cp2 != empty) {
+                multipoints.put(name, new String(new int[]{cp1, cp2}, 0, 2));
+            }
+            i++;
         }
+
+        Validate.isTrue(i == size, "Unexpected count of entities loaded");
     }
 }

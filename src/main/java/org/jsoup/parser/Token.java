@@ -1,9 +1,9 @@
 package org.jsoup.parser;
 
 import org.jsoup.helper.Validate;
-import org.jsoup.nodes.Attribute;
 import org.jsoup.nodes.Attributes;
-import org.jsoup.nodes.BooleanAttribute;
+
+import static org.jsoup.internal.Normalizer.lowerCase;
 
 /**
  * Parse tokens for the Tokeniser.
@@ -105,15 +105,15 @@ abstract class Token {
                 // the tokeniser has skipped whitespace control chars, but trimming could collapse to empty for other control codes, so verify here
                 pendingAttributeName = pendingAttributeName.trim();
                 if (pendingAttributeName.length() > 0) {
-                    Attribute attribute;
+                    String value;
                     if (hasPendingAttributeValue)
-                        attribute = new Attribute(pendingAttributeName,
-                            pendingAttributeValue.length() > 0 ? pendingAttributeValue.toString() : pendingAttributeValueS);
+                        value = pendingAttributeValue.length() > 0 ? pendingAttributeValue.toString() : pendingAttributeValueS;
                     else if (hasEmptyAttributeValue)
-                        attribute = new Attribute(pendingAttributeName, "");
+                        value = "";
                     else
-                        attribute = new BooleanAttribute(pendingAttributeName);
-                    attributes.put(attribute);
+                        value = null;
+                    // note that we add, not put. So that the first is kept, and rest are deduped, once in a context where case sensitivity is known (the appropriate tree builder).
+                    attributes.add(pendingAttributeName, value);
                 }
             }
             pendingAttributeName = null;
@@ -126,23 +126,24 @@ abstract class Token {
         final void finaliseTag() {
             // finalises for emit
             if (pendingAttributeName != null) {
-                // todo: check if attribute name exists; if so, drop and error
                 newAttribute();
             }
         }
 
+        /** Preserves case */
         final String name() { // preserves case, for input into Tag.valueOf (which may drop case)
             Validate.isFalse(tagName == null || tagName.length() == 0);
             return tagName;
         }
 
-        final String normalName() { // loses case, used in tree building for working out where in tree it should go
+        /** Lower case */
+        final String normalName() { // lower case, used in tree building for working out where in tree it should go
             return normalName;
         }
 
         final Tag name(String name) {
             tagName = name;
-            normalName = name.toLowerCase();
+            normalName = lowerCase(name);
             return this;
         }
 
@@ -150,15 +151,16 @@ abstract class Token {
             return selfClosing;
         }
 
-        @SuppressWarnings({"TypeMayBeWeakened"})
         final Attributes getAttributes() {
+            if (attributes == null)
+                attributes = new Attributes();
             return attributes;
         }
 
         // these appenders are rarely hit in not null state-- caused by null chars.
         final void appendTagName(String append) {
             tagName = tagName == null ? append : tagName.concat(append);
-            normalName = tagName.toLowerCase();
+            normalName = lowerCase(tagName);
         }
 
         final void appendTagName(char append) {
@@ -216,22 +218,20 @@ abstract class Token {
     final static class StartTag extends Tag {
         StartTag() {
             super();
-            attributes = new Attributes();
             type = TokenType.StartTag;
         }
 
         @Override
         Tag reset() {
             super.reset();
-            attributes = new Attributes();
-            // todo - would prefer these to be null, but need to check Element assertions
+            attributes = null;
             return this;
         }
 
         StartTag nameAttr(String name, Attributes attributes) {
             this.tagName = name;
             this.attributes = attributes;
-            normalName = tagName.toLowerCase();
+            normalName = lowerCase(tagName);
             return this;
         }
 
@@ -281,7 +281,7 @@ abstract class Token {
         }
     }
 
-    final static class Character extends Token {
+    static class Character extends Token {
         private String data;
 
         Character() {
@@ -308,6 +308,19 @@ abstract class Token {
         public String toString() {
             return getData();
         }
+    }
+
+    final static class CData extends Character {
+        CData(String data) {
+            super();
+            this.data(data);
+        }
+
+        @Override
+        public String toString() {
+            return "<![CDATA[" + getData() + "]]>";
+        }
+
     }
 
     final static class EOF extends Token {
@@ -357,6 +370,10 @@ abstract class Token {
         return type == TokenType.Character;
     }
 
+    final boolean isCData() {
+        return this instanceof CData;
+    }
+
     final Character asCharacter() {
         return (Character) this;
     }
@@ -365,12 +382,12 @@ abstract class Token {
         return type == TokenType.EOF;
     }
 
-    enum TokenType {
+    public enum TokenType {
         Doctype,
         StartTag,
         EndTag,
         Comment,
-        Character,
+        Character, // note no CData - treated in builder as an extension of Character
         EOF
     }
 }

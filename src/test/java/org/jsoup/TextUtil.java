@@ -1,14 +1,20 @@
 package org.jsoup;
 
+import java.util.regex.Pattern;
+
 /**
  Text utils to ease testing
 
  @author Jonathan Hedley, jonathan@hedley.net */
 public class TextUtil {
-    public static final String LE = String.format("%n");
+    static Pattern stripper = Pattern.compile("\\r?\\n\\s*");
+    static Pattern stripCRs = Pattern.compile("\\r*");
 
     public static String stripNewlines(String text) {
-        text = text.replaceAll("\\n\\s*", "");
-        return text;
+        return stripper.matcher(text).replaceAll("");
+    }
+
+    public static String stripCRs(String text) {
+        return stripCRs.matcher(text).replaceAll("");
     }
 }

@@ -46,6 +46,12 @@ public class FormElement extends Element {
         return this;
     }
 
+    @Override
+    protected void removeChild(Node out) {
+        super.removeChild(out);
+        elements.remove(out);
+    }
+
     /**
      * Prepare to submit this form. A Connection object is created with the request set up from the form values. You
      * can then set up other options (like user-agent, timeout, cookies), then execute it.
@@ -70,7 +76,7 @@ public class FormElement extends Element {
      * @return a list of key vals
      */
     public List<Connection.KeyVal> formData() {
-        ArrayList<Connection.KeyVal> data = new ArrayList<Connection.KeyVal>();
+        ArrayList<Connection.KeyVal> data = new ArrayList<>();
 
         // iterate the form control elements and accumulate their values
         for (Element el: elements) {
@@ -80,7 +86,9 @@ public class FormElement extends Element {
             if (name.length() == 0) continue;
             String type = el.attr("type");
 
-            if ("select".equals(el.tagName())) {
+            if (type.equalsIgnoreCase("button")) continue; // browsers don't submit these
+
+            if ("select".equals(el.normalName())) {
                 Elements options = el.select("option[selected]");
                 boolean set = false;
                 for (Element option: options) {
@@ -103,5 +111,10 @@ public class FormElement extends Element {
             }
         }
         return data;
+    }
+
+    @Override
+    public FormElement clone() {
+        return (FormElement) super.clone();
     }
 }

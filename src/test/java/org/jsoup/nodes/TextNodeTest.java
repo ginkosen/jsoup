@@ -4,6 +4,8 @@ import org.jsoup.Jsoup;
 import org.jsoup.TextUtil;
 import org.junit.Test;
 
+import java.util.List;
+
 import static org.junit.Assert.*;
 
 /**
@@ -12,11 +14,11 @@ import static org.junit.Assert.*;
  @author Jonathan Hedley, jonathan@hedley.net */
 public class TextNodeTest {
     @Test public void testBlank() {
-        TextNode one = new TextNode("", "");
-        TextNode two = new TextNode("     ", "");
-        TextNode three = new TextNode("  \n\n   ", "");
-        TextNode four = new TextNode("Hello", "");
-        TextNode five = new TextNode("  \nHello ", "");
+        TextNode one = new TextNode("");
+        TextNode two = new TextNode("     ");
+        TextNode three = new TextNode("  \n\n   ");
+        TextNode four = new TextNode("Hello");
+        TextNode five = new TextNode("  \nHello ");
 
         assertTrue(one.isBlank());
         assertTrue(two.isBlank());
@@ -40,7 +42,7 @@ public class TextNodeTest {
         tn.text(" POW!");
         assertEquals("One <span>two &amp;</span> POW!", TextUtil.stripNewlines(p.html()));
 
-        tn.attr("text", "kablam &");
+        tn.attr(tn.nodeName(), "kablam &");
         assertEquals("kablam &", tn.text());
         assertEquals("One <span>two &amp;</span>kablam &amp;", TextUtil.stripNewlines(p.html()));
     }
@@ -71,5 +73,66 @@ public class TextNodeTest {
         Document doc = Jsoup.parse(new String(Character.toChars(135361)));
         TextNode t = doc.body().textNodes().get(0);
         assertEquals(new String(Character.toChars(135361)), t.outerHtml().trim());
+    }
+
+    @Test public void testLeadNodesHaveNoChildren() {
+        Document doc = Jsoup.parse("<div>Hello there</div>");
+        Element div = doc.select("div").first();
+        TextNode tn = (TextNode) div.childNode(0);
+        List<Node> nodes = tn.childNodes();
+        assertEquals(0, nodes.size());
+    }
+
+    @Test public void testSpaceNormalise() {
+        // https://github.com/jhy/jsoup/issues/1309
+        String whole = "Two  spaces";
+        String norm = "Two spaces";
+        TextNode tn = new TextNode(whole); // there are 2 spaces between the words
+        assertEquals(whole, tn.getWholeText());
+        assertEquals(norm, tn.text());
+        assertEquals(norm, tn.outerHtml());
+        assertEquals(norm, tn.toString());
+
+        Element el = new Element("p");
+        el.appendChild(tn); // this used to change the context
+        //tn.setParentNode(el); // set any parent
+        assertEquals(whole, tn.getWholeText());
+        assertEquals(norm, tn.text());
+        assertEquals(norm, tn.outerHtml());
+        assertEquals(norm, tn.toString());
+
+        assertEquals("<p>" + norm + "</p>", el.outerHtml());
+        assertEquals(norm, el.html());
+        assertEquals(whole, el.wholeText());
+    }
+
+    @Test
+    public void testClone() {
+        // https://github.com/jhy/jsoup/issues/1176
+        TextNode x = new TextNode("zzz");
+        TextNode y = x.clone();
+
+        assertNotSame(x, y);
+        assertEquals(x.outerHtml(), y.outerHtml());
+
+        y.text("yyy");
+        assertNotEquals(x.outerHtml(), y.outerHtml());
+        assertEquals("zzz", x.text());
+
+        x.attributes(); // already cloned so no impact
+        y.text("xxx");
+        assertEquals("zzz", x.text());
+        assertEquals("xxx", y.text());
+    }
+
+    @Test
+    public void testCloneAfterAttributesHit() {
+        // https://github.com/jhy/jsoup/issues/1176
+        TextNode x = new TextNode("zzz");
+        x.attributes(); // moves content from leafnode value to attributes, which were missed in clone
+        TextNode y = x.clone();
+        y.text("xxx");
+        assertEquals("zzz", x.text());
+        assertEquals("xxx", y.text());
     }
 }
